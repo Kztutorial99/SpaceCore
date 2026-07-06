@@ -6,20 +6,10 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build Type'
-        required: true
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
-          - both
 
 jobs:
   build:
-    name: Build SpaceCore (${{ matrix.flavor }} - ${{ matrix.build_type }})
+    name: Build (${{ matrix.flavor }}-${{ matrix.build_type }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -28,73 +18,56 @@ jobs:
         build_type: [debug, release]
 
     steps:
-      - name: 📥 Checkout Source
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: ☕ Setup JDK 11
+      - name: ☕ Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '11'
+          java-version: '17'
           distribution: 'temurin'
           cache: gradle
 
-      - name: 🔍 Check Android SDK
+      - name: 🔑 Accept SDK Licenses
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls $ANDROID_HOME/platforms/ 2>/dev/null || echo "No platforms yet"
-          ls $ANDROID_HOME/build-tools/ 2>/dev/null || echo "No build-tools yet"
+          mkdir -p "$ANDROID_HOME/licenses"
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee"  > "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "84831b9409646a918e30573bab4c9c91346d8abd"  > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          echo "33b6937684c63cd0a3b5f4952623ebf3cc166fa7" >> "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          echo "601085b94cd77f0b54ff86406957099ebe79c4d6"  > "$ANDROID_HOME/licenses/intel-android-extra-license"
+          echo "✅ Licenses accepted"
+          ls -la "$ANDROID_HOME/licenses/"
 
-      - name: 📦 Install Required SDK Components
+      - name: 📦 Install SDK Components
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-31" \
             "build-tools;30.0.3" \
-            "platform-tools" \
-            --verbose 2>&1 | tail -5
+            "platform-tools" 2>&1 | tail -5
+          echo "✅ SDK ready"
 
-      - name: 📋 Grant Gradle Execute Permission
+      - name: 🔧 Gradle Permission
         run: chmod +x gradlew
 
-      - name: 🔑 Verify Signing Key
+      - name: 🏗️ Build ${{ matrix.flavor }} ${{ matrix.build_type }}
         run: |
-          if [ -f "meta.jks" ]; then
-            echo "✅ Signing key found: meta.jks"
-            keytool -list -keystore meta.jks -storepass metameta 2>/dev/null | head -5 || true
-          else
-            echo "❌ Signing key not found!"
-            exit 1
-          fi
-
-      - name: 🏗️ Build ${{ matrix.flavor }} ${{ matrix.build_type }} APK
-        run: |
-          FLAVOR="${{ matrix.flavor }}"
           TYPE="${{ matrix.build_type }}"
-          # Capitalize first letter of build type
-          TYPE_CAP="$(echo ${TYPE:0:1} | tr '[:lower:]' '[:upper:]')${TYPE:1}"
-          TASK="assemble${FLAVOR}${TYPE_CAP}"
-          echo "▶ Running: ./gradlew $TASK"
-          ./gradlew $TASK \
-            --stacktrace \
+          TYPE_CAP="$(echo ${TYPE:0:1} | tr a-z A-Z)${TYPE:1}"
+          echo "▶ Task: assemble${{ matrix.flavor }}${TYPE_CAP}"
+          ./gradlew assemble${{ matrix.flavor }}${TYPE_CAP} \
             --no-daemon \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m" \
-            -Dandroid.useAndroidX=true
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m"
 
-      - name: 📊 Show APK Info
+      - name: 📊 APK Info
         if: success()
         run: |
-          echo "=== Built APKs ==="
-          find app/build/outputs/apk -name "*.apk" 2>/dev/null | while read apk; do
-            size=$(du -sh "$apk" | cut -f1)
-            echo "📦 $(basename $apk)  [$size]  →  $apk"
+          find app/build/outputs/apk -name "*.apk" | while read f; do
+            echo "📦 $(basename $f) — $(du -sh $f | cut -f1)"
           done
 
-      - name: 📤 Upload APK Artifact
+      - name: 📤 Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -102,50 +75,35 @@ jobs:
           path: app/build/outputs/apk/**/*.apk
           retention-days: 30
 
-      - name: ✅ Build Success
+      - name: ✅ Success
         if: success()
-        run: |
-          echo "✅ =================================="
-          echo "   BUILD SUCCESS"
-          echo "   Flavor  : ${{ matrix.flavor }}"
-          echo "   Type    : ${{ matrix.build_type }}"
-          echo "   Branch  : ${{ github.ref_name }}"
-          echo "   Commit  : ${{ github.sha }}"
-          echo "✅ =================================="
+        run: echo "🟢 BUILD SUCCESS — ${{ matrix.flavor }} ${{ matrix.build_type }}"
 
-      - name: ❌ Build Failed
+      - name: ❌ Failed
         if: failure()
-        run: |
-          echo "❌ =================================="
-          echo "   BUILD FAILED"
-          echo "   Flavor  : ${{ matrix.flavor }}"
-          echo "   Type    : ${{ matrix.build_type }}"
-          echo "   Branch  : ${{ github.ref_name }}"
-          echo "   Commit  : ${{ github.sha }}"
-          echo "❌ =================================="
+        run: echo "🔴 BUILD FAILED — ${{ matrix.flavor }} ${{ matrix.build_type }}"
 
-  status-report:
-    name: 📊 Build Status Report
+  report:
+    name: 📊 Status Report
     runs-on: ubuntu-latest
     needs: build
     if: always()
     steps:
-      - name: 📋 Final Status
+      - name: 📋 Summary
         run: |
-          echo "========================================"
-          echo "    SPACECORE BUILD STATUS REPORT"
-          echo "========================================"
-          echo "Repo    : ${{ github.repository }}"
-          echo "Branch  : ${{ github.ref_name }}"
-          echo "Commit  : ${{ github.sha }}"
-          echo "Trigger : ${{ github.event_name }}"
-          echo "Time    : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "Result  : ${{ needs.build.result }}"
-          echo "========================================"
+          echo "==============================="
+          echo "  SPACECORE BUILD REPORT"
+          echo "==============================="
+          echo "Repo   : ${{ github.repository }}"
+          echo "Branch : ${{ github.ref_name }}"
+          echo "Commit : ${{ github.sha }}"
+          echo "Time   : $(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "Result : ${{ needs.build.result }}"
+          echo "==============================="
           if [ "${{ needs.build.result }}" = "success" ]; then
-            echo "🟢 ALL BUILDS PASSED — Download APK from Artifacts!"
+            echo "🟢 ALL BUILDS PASSED — APKs in Artifacts tab!"
           elif [ "${{ needs.build.result }}" = "failure" ]; then
-            echo "🔴 SOME BUILDS FAILED — Check job logs above!"
+            echo "🔴 BUILD FAILED — check logs above"
             exit 1
           else
             echo "🟡 STATUS: ${{ needs.build.result }}"
