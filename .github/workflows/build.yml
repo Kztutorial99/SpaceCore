@@ -21,50 +21,63 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      - name: ☕ Setup JDK 17
+      - name: ☕ Setup JDK 11 (for Gradle 6.7.1)
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '11'
           distribution: 'temurin'
           cache: gradle
 
       - name: 🔑 Accept SDK Licenses
         run: |
           mkdir -p "$ANDROID_HOME/licenses"
-          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee"  > "$ANDROID_HOME/licenses/android-sdk-license"
-          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> "$ANDROID_HOME/licenses/android-sdk-license"
-          echo "84831b9409646a918e30573bab4c9c91346d8abd"  > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          echo "33b6937684c63cd0a3b5f4952623ebf3cc166fa7" >> "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          echo "601085b94cd77f0b54ff86406957099ebe79c4d6"  > "$ANDROID_HOME/licenses/intel-android-extra-license"
-          echo "✅ Licenses accepted"
+          printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e" \
+            > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf "84831b9409646a918e30573bab4c9c91346d8abd\n33b6937684c63cd0a3b5f4952623ebf3cc166fa7" \
+            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          printf "601085b94cd77f0b54ff86406957099ebe79c4d6" \
+            > "$ANDROID_HOME/licenses/intel-android-extra-license"
+          echo "✅ Licenses written"
           ls -la "$ANDROID_HOME/licenses/"
 
-      - name: 📦 Install SDK Components
+      - name: 📦 Install SDK 31 + Build-Tools 31.0.0
         run: |
+          # sdkmanager requires Java 17+, use pre-installed Java 17 on ubuntu-latest
+          if [ -n "$JAVA_HOME_17_X64" ]; then
+            export JAVA_HOME="$JAVA_HOME_17_X64"
+            echo "Using Java 17 for sdkmanager: $JAVA_HOME"
+          fi
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-31" \
-            "build-tools;30.0.3" \
-            "platform-tools" 2>&1 | tail -5
-          echo "✅ SDK ready"
+            "build-tools;31.0.0" \
+            "platform-tools" 2>&1 | grep -v "^Downloading\|^Unzip\|^\[" || true
+          echo "✅ SDK components installed"
+          # Restore JDK 11 for Gradle
+          export JAVA_HOME="$JAVA_HOME_11_X64"
+          java -version
 
       - name: 🔧 Gradle Permission
         run: chmod +x gradlew
 
-      - name: 🏗️ Build ${{ matrix.flavor }} ${{ matrix.build_type }}
+      - name: 🏗️ Build ${{ matrix.flavor }}-${{ matrix.build_type }}
         run: |
           TYPE="${{ matrix.build_type }}"
           TYPE_CAP="$(echo ${TYPE:0:1} | tr a-z A-Z)${TYPE:1}"
-          echo "▶ Task: assemble${{ matrix.flavor }}${TYPE_CAP}"
-          ./gradlew assemble${{ matrix.flavor }}${TYPE_CAP} \
+          TASK="assemble${{ matrix.flavor }}${TYPE_CAP}"
+          echo "▶ Running: ./gradlew $TASK"
+          ./gradlew $TASK \
             --no-daemon \
             --stacktrace \
             -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m"
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_11_X64 }}
 
       - name: 📊 APK Info
         if: success()
         run: |
-          find app/build/outputs/apk -name "*.apk" | while read f; do
-            echo "📦 $(basename $f) — $(du -sh $f | cut -f1)"
+          echo "=== APK Files ==="
+          find app/build/outputs/apk -name "*.apk" 2>/dev/null | while read f; do
+            echo "📦 $(basename $f) [$(du -sh $f | cut -f1)]"
           done
 
       - name: 📤 Upload APK
@@ -75,36 +88,36 @@ jobs:
           path: app/build/outputs/apk/**/*.apk
           retention-days: 30
 
-      - name: ✅ Success
+      - name: ✅ SUCCESS
         if: success()
-        run: echo "🟢 BUILD SUCCESS — ${{ matrix.flavor }} ${{ matrix.build_type }}"
+        run: echo "🟢 SUCCESS — SpaceCore ${{ matrix.flavor }}-${{ matrix.build_type }}"
 
-      - name: ❌ Failed
+      - name: ❌ FAILED
         if: failure()
-        run: echo "🔴 BUILD FAILED — ${{ matrix.flavor }} ${{ matrix.build_type }}"
+        run: echo "🔴 FAILED — SpaceCore ${{ matrix.flavor }}-${{ matrix.build_type }}"
 
   report:
-    name: 📊 Status Report
+    name: 📊 Build Report
     runs-on: ubuntu-latest
     needs: build
     if: always()
     steps:
-      - name: 📋 Summary
+      - name: 📋 Final Summary
         run: |
-          echo "==============================="
+          echo "============================================"
           echo "  SPACECORE BUILD REPORT"
-          echo "==============================="
-          echo "Repo   : ${{ github.repository }}"
-          echo "Branch : ${{ github.ref_name }}"
-          echo "Commit : ${{ github.sha }}"
-          echo "Time   : $(date -u '+%Y-%m-%d %H:%M UTC')"
-          echo "Result : ${{ needs.build.result }}"
-          echo "==============================="
+          echo "============================================"
+          echo "Repo    : ${{ github.repository }}"
+          echo "Branch  : ${{ github.ref_name }}"
+          echo "Commit  : ${{ github.sha }}"
+          echo "Trigger : ${{ github.event_name }}"
+          echo "Time    : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Result  : ${{ needs.build.result }}"
+          echo "============================================"
           if [ "${{ needs.build.result }}" = "success" ]; then
-            echo "🟢 ALL BUILDS PASSED — APKs in Artifacts tab!"
+            echo "🟢 ALL 4 BUILDS PASSED — Download APKs in Artifacts tab!"
           elif [ "${{ needs.build.result }}" = "failure" ]; then
-            echo "🔴 BUILD FAILED — check logs above"
-            exit 1
+            echo "🔴 BUILD FAILED — Check job logs above for details"
           else
             echo "🟡 STATUS: ${{ needs.build.result }}"
           fi
